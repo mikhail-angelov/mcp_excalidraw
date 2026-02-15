@@ -67,29 +67,28 @@ function sanitizeInput(input: string): string {
   return sanitized.trim();
 }
 
-// Initialize LangChain LLM (with fallback if no API key)
-let llm: ChatDeepSeek | null = null;
-let tools: StructuredTool[] = [];
-let llmWithTools: Runnable | null = null;
+// Initialize session-specific storage for LLM and tools
+let genericLlm: ChatDeepSeek | null = null;
+const sessionTools = new Map<string, StructuredTool[]>();
+const sessionLLMWithTools = new Map<string, Runnable>();
 
 try {
   if (
     process.env.DEEPSEEK_API_KEY &&
     process.env.DEEPSEEK_API_KEY !== "your_deepseek_api_key_here"
   ) {
-    llm = new ChatDeepSeek({
+    genericLlm = new ChatDeepSeek({
       model: "deepseek-chat",
       temperature: 0.1,
       apiKey: process.env.DEEPSEEK_API_KEY,
     });
-    logger.info("LangChain LLM initialized with DeepSeek API key");
+    logger.info("LangChain generic LLM initialized");
   } else {
     logger.warn(
       "No valid DeepSeek API key found. Chat functionality will use simple pattern matching.",
     );
   }
 } catch (error: any) {
-  console.log("-----", error);
   logger.error("Failed to initialize LangChain LLM:", error);
 }
 
@@ -123,9 +122,11 @@ function processSimpleRequest(userMessage: string): string {
 }
 
 // Helper function to get current canvas state
-async function getCanvasState(): Promise<string> {
+async function getCanvasState(sessionId: string): Promise<string> {
   try {
-    const response = await fetch(`${EXPRESS_SERVER_URL}/api/elements`);
+    const response = await fetch(`${EXPRESS_SERVER_URL}/api/elements`, {
+      headers: sessionId ? { 'X-Session-Id': sessionId } : {}
+    });
     if (!response.ok) {
       return "Unable to fetch canvas state.";
     }
@@ -143,10 +144,10 @@ async function getCanvasState(): Promise<string> {
   }
 }
 
-// Initialize MCP tools via stdio
-async function initializeMCPTools(): Promise<boolean> {
+// Initialize MCP tools via stdio for a specific session
+async function initializeSessionMCPTools(sessionId: string): Promise<boolean> {
   try {
-    logger.info("Initializing MCP tools via stdio...");
+    logger.info(`Initializing MCP tools for session: ${sessionId}`);
 
     const serverParams = {
       command: "node",
@@ -159,7 +160,7 @@ async function initializeMCPTools(): Promise<boolean> {
     // Create MCP client with the transport
     const client = new Client(
       {
-        name: "excalidraw-chat-client",
+        name: `excalidraw-chat-client-${sessionId}`,
         version: "1.0.0",
       },
       {
@@ -174,50 +175,53 @@ async function initializeMCPTools(): Promise<boolean> {
     const loadedTools = await loadMcpTools("excalidraw-server", client);
 
     if (loadedTools.length === 0) {
-      logger.error("No tools loaded from MCP server");
+      logger.error(`No tools loaded from MCP server for session ${sessionId}`);
       return false;
     }
 
-    tools = loadedTools;
-    logger.info(`Successfully loaded ${tools.length} tools from MCP server`);
+    sessionTools.set(sessionId, loadedTools);
+    logger.info(`Successfully loaded ${loadedTools.length} tools for session ${sessionId}`);
 
-    // Bind tools to the LLM
-    if (llm) {
-      llmWithTools = llm.bindTools(tools);
+    // Bind tools to the LLM for this session
+    if (genericLlm) {
+      sessionLLMWithTools.set(sessionId, genericLlm.bindTools(loadedTools));
     }
 
     return true;
   } catch (error: any) {
-    logger.error("Failed to initialize MCP tools:", error);
+    logger.error(`Failed to initialize MCP tools for session ${sessionId}:`, error);
     return false;
   }
 }
 
 // Main chat function with proper tool calling
-export async function processChatRequest(userMessage: string): Promise<string> {
+export async function processChatRequest(userMessage: string, sessionId: string = 'default-session'): Promise<string> {
   try {
-    logger.info("Processing chat request", { messageLength: userMessage.length });
+    logger.info("Processing chat request", { messageLength: userMessage.length, sessionId });
 
-    if (!llm) {
+    if (!genericLlm) {
       // Fallback to simple pattern matching
       const simpleResponse = processSimpleRequest(userMessage);
       return `I understand you want to: "${userMessage}"\n\n${simpleResponse}\n\nNote: To use full AI capabilities, please set a valid DEEPSEEK_API_KEY in your .env file.`;
     }
 
-    // Initialize tools if not already initialized
-    if (tools.length === 0) {
-      const initialized = await initializeMCPTools();
+    // Initialize tools for this session if not already initialized
+    if (!sessionTools.has(sessionId)) {
+      const initialized = await initializeSessionMCPTools(sessionId);
       if (!initialized) {
         return "Failed to initialize MCP tools. Please check if the MCP server is running.";
       }
     }
 
-    if (!llmWithTools) {
-      return "LLM with tools not initialized. Please check the configuration.";
+    const llmWithTools = sessionLLMWithTools.get(sessionId);
+    const tools = sessionTools.get(sessionId);
+
+    if (!llmWithTools || !tools) {
+      return "LLM for this session not initialized. Please check the configuration.";
     }
 
-    // Get current canvas state
-    const canvasState = await getCanvasState();
+    // Get current canvas state for this session
+    const canvasState = await getCanvasState(sessionId);
 
     // Sanitize user message
     const sanitizedUserMessage = sanitizeInput(userMessage);
@@ -239,18 +243,18 @@ export async function processChatRequest(userMessage: string): Promise<string> {
     // Loop for multiple tool call iterations
     while (iteration < maxIterations) {
       iteration++;
-      console.log(`\n=== Iteration ${iteration} ===`);
+      logger.info(`Processing iteration ${iteration} for session ${sessionId}`);
 
       // Get LLM response
       const response = (await llmWithTools.invoke(currentMessages)) as AIMessage;
-      console.log("Model response:", response);
+      logger.debug("Model response received", { content: response.content, tool_calls: response.tool_calls });
 
       // Add the response to messages
       currentMessages.push(response);
 
       // Check if the model wants to call tools
       if (response.tool_calls && response.tool_calls.length > 0) {
-        console.log(`Model wants to call ${response.tool_calls.length} tools`);
+        logger.info(`Model requested ${response.tool_calls.length} tool calls for session ${sessionId}`);
 
         // Execute all requested tools
         for (const toolCall of response.tool_calls) {
@@ -263,9 +267,10 @@ export async function processChatRequest(userMessage: string): Promise<string> {
           if (selectedTool) {
             try {
               // Execute the tool
-              console.log(`Executing tool: ${toolName}`, toolArgs);
+              toolArgs.sessionId = sessionId;
+              logger.info(`Invoking tool: ${toolName} for session ${sessionId}`, { toolArgs });
               const toolResult = await selectedTool.invoke(toolArgs);
-              console.log(`Tool ${toolName} result:`, toolResult);
+              logger.info(`Tool ${toolName} completed for session ${sessionId}`, { result: toolResult });
 
               // Add tool result to messages
               currentMessages.push(new ToolMessage({
@@ -292,7 +297,7 @@ export async function processChatRequest(userMessage: string): Promise<string> {
         continue;
       } else {
         // No more tool calls, use this as final response
-        console.log("No more tool calls, using as final response");
+        logger.info(`Chat cycle completed for session ${sessionId} after ${iteration} iterations`);
         finalResponse = response.content.toString();
         break;
       }

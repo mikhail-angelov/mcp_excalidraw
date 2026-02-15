@@ -8,8 +8,7 @@ import { randomUUID } from 'crypto';
  * Persists session ID via X-Session-Id header.
  */
 export const sessionHandler = (req: Request, res: Response, next: NextFunction) => {
-  let sessionId = req.cookies?.mcp_sid;
-  
+  let sessionId = req.cookies?.mcp_sid || (req.headers['x-session-id'] as string);
   if (!sessionId) {
     sessionId = randomUUID();
     // Set cookie: valid for 30 days, readable by client (since user said "persisted on client"), 
