@@ -195,7 +195,11 @@ async function initializeSessionMCPTools(sessionId: string): Promise<boolean> {
 }
 
 // Main chat function with proper tool calling
-export async function processChatRequest(userMessage: string, sessionId: string = 'default-session'): Promise<string> {
+export async function processChatRequest(
+  userMessage: string, 
+  sessionId: string = 'default-session',
+  onStep?: (step: { type: string; [key: string]: any }) => void
+): Promise<string> {
   try {
     logger.info("Processing chat request", { messageLength: userMessage.length, sessionId });
 
@@ -207,6 +211,7 @@ export async function processChatRequest(userMessage: string, sessionId: string 
 
     // Initialize tools for this session if not already initialized
     if (!sessionTools.has(sessionId)) {
+      onStep?.({ type: 'initializing_tools' });
       const initialized = await initializeSessionMCPTools(sessionId);
       if (!initialized) {
         return "Failed to initialize MCP tools. Please check if the MCP server is running.";
@@ -244,8 +249,9 @@ export async function processChatRequest(userMessage: string, sessionId: string 
     while (iteration < maxIterations) {
       iteration++;
       logger.info(`Processing iteration ${iteration} for session ${sessionId}`);
-
+      
       // Get LLM response
+      onStep?.({ type: 'thinking' });
       const response = (await llmWithTools.invoke(currentMessages)) as AIMessage;
       logger.debug("Model response received", { content: response.content, tool_calls: response.tool_calls });
 
@@ -269,8 +275,11 @@ export async function processChatRequest(userMessage: string, sessionId: string 
               // Execute the tool
               toolArgs.sessionId = sessionId;
               logger.info(`Invoking tool: ${toolName} for session ${sessionId}`, { toolArgs });
+              
+              onStep?.({ type: 'tool_invoking', name: toolName, args: toolArgs });
               const toolResult = await selectedTool.invoke(toolArgs);
               logger.info(`Tool ${toolName} completed for session ${sessionId}`, { result: toolResult });
+              onStep?.({ type: 'tool_completed', name: toolName, result: toolResult });
 
               // Add tool result to messages
               currentMessages.push(new ToolMessage({
@@ -279,6 +288,7 @@ export async function processChatRequest(userMessage: string, sessionId: string 
               }));
             } catch (error: any) {
               logger.error(`Error executing tool ${toolName}:`, error);
+              onStep?.({ type: 'tool_error', name: toolName, error: error.message });
               currentMessages.push(new ToolMessage({
                 tool_call_id: toolId,
                 content: `Error executing tool ${toolName}: ${error.message}`,
@@ -299,6 +309,7 @@ export async function processChatRequest(userMessage: string, sessionId: string 
         // No more tool calls, use this as final response
         logger.info(`Chat cycle completed for session ${sessionId} after ${iteration} iterations`);
         finalResponse = response.content.toString();
+        onStep?.({ type: 'final_response', content: finalResponse });
         break;
       }
     }

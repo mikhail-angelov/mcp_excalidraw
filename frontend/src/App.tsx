@@ -81,12 +81,13 @@ interface ApiResponse {
 type SyncStatus = 'idle' | 'syncing' | 'success' | 'error';
 
 // AI Agent types
-type AIMessageType = 'user' | 'assistant' | 'system';
+type AIMessageType = 'user' | 'assistant' | 'system' | 'step';
 interface AIMessage {
   id: string;
   type: AIMessageType;
   content: string;
   timestamp: Date;
+  steps?: any[];
 }
 
 type AIAgentStatus = 'idle' | 'thinking' | 'responding' | 'error';
@@ -559,6 +560,30 @@ function App(): JSX.Element {
           }
           break
 
+        case 'chat_step':
+          console.log('Received chat step:', (data as any).step)
+          const step = (data as any).step;
+          let content = '';
+          let icon = '';
+
+          switch (step.type) {
+            case 'iteration_started': content = `Iteration ${step.iteration}`; icon = '🔄'; break;
+            case 'thinking': content = 'Thinking...'; icon = '🧠'; break;
+            case 'tool_calls_requested': content = `Calling ${step.toolCalls.length} tools`; icon = '🛠️'; break;
+            case 'tool_invoking': content = `Invoking ${step.name}...`; icon = '🔌'; break;
+            case 'tool_completed': content = `Tool ${step.name} completed`; icon = '✅'; break;
+            case 'tool_error': content = `Error in ${step.name}: ${step.error}`; icon = '❌'; break;
+            case 'final_response': content = 'Generating final response...'; icon = '💬'; break;
+          }
+
+          setAiMessages(prev => [...prev, {
+            id: `step-${Date.now()}-${Math.random()}`,
+            type: 'step',
+            content: `${icon} ${content}`,
+            timestamp: new Date()
+          }]);
+          break
+
         default:
           console.log('Unknown WebSocket message type:', data.type)
       }
@@ -860,7 +885,9 @@ function App(): JSX.Element {
               >
                 <div className="ai-message-header">
                   <span className="ai-message-sender">
-                    {message.type === 'user' ? 'You' : 'AI Assistant'}
+                    {message.type === 'user' ? 'You' :
+                      message.type === 'assistant' ? 'AI Assistant' :
+                        message.type === 'step' ? 'Progress' : 'System'}
                   </span>
                   <span className="ai-message-time">
                     {formatMessageTime(message.timestamp)}
@@ -872,11 +899,13 @@ function App(): JSX.Element {
               </div>
             ))}
             {aiStatus === 'thinking' && (
-              <div className="ai-thinking">
-                <div className="thinking-dots">
-                  <span>.</span>
-                  <span>.</span>
-                  <span>.</span>
+              <div className="ai-thinking-container">
+                <div className="ai-thinking">
+                  <div className="thinking-dots">
+                    <span>.</span>
+                    <span>.</span>
+                    <span>.</span>
+                  </div>
                 </div>
               </div>
             )}

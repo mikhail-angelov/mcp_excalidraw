@@ -1134,7 +1134,16 @@ app.post('/api/chat', async (req: Request, res: Response) => {
     
     // Dynamically import the chat module
     const chatModule = await import('./chat.js');
-    const result = await chatModule.processChatRequest(message, req.sessionId!);
+    const sessionId = req.sessionId!;
+    
+    // Process chat request with a callback to notify client of progress
+    const result = await chatModule.processChatRequest(message, sessionId, (step) => {
+      broadcast(sessionId, {
+        type: 'chat_step',
+        step,
+        timestamp: new Date().toISOString()
+      });
+    });
     
     res.json({
       success: true,
