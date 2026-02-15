@@ -1,8 +1,10 @@
 import { ChatDeepSeek } from "@langchain/deepseek";
-import { HumanMessage, SystemMessage } from "@langchain/core/messages";
+import { HumanMessage, SystemMessage, BaseMessage, ToolMessage, AIMessage } from "@langchain/core/messages";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { loadMcpTools } from "@langchain/mcp-adapters";
+import { StructuredTool } from "@langchain/core/tools";
+import { Runnable } from "@langchain/core/runnables";
 import logger from "./utils/logger.js";
 import fetch from "node-fetch";
 import dotenv from "dotenv";
@@ -67,8 +69,8 @@ function sanitizeInput(input: string): string {
 
 // Initialize LangChain LLM (with fallback if no API key)
 let llm: ChatDeepSeek | null = null;
-let tools: any[] = [];
-let llmWithTools: any = null;
+let tools: StructuredTool[] = [];
+let llmWithTools: Runnable | null = null;
 
 try {
   if (
@@ -220,8 +222,7 @@ export async function processChatRequest(userMessage: string): Promise<string> {
     // Sanitize user message
     const sanitizedUserMessage = sanitizeInput(userMessage);
  
-    // Create messages
-    const messages = [
+    const messages: BaseMessage[] = [
       new SystemMessage(BASE_SYSTEM_PROMPT),
       new HumanMessage(
         `Current canvas state: ${canvasState}\n\n` +
@@ -230,7 +231,7 @@ export async function processChatRequest(userMessage: string): Promise<string> {
       ),
     ];
 
-    let currentMessages: any[] = [...messages];
+    let currentMessages: BaseMessage[] = [...messages];
     let finalResponse = "";
     let iteration = 0;
     const maxIterations = 10;
@@ -241,7 +242,7 @@ export async function processChatRequest(userMessage: string): Promise<string> {
       console.log(`\n=== Iteration ${iteration} ===`);
 
       // Get LLM response
-      const response = await llmWithTools.invoke(currentMessages);
+      const response = (await llmWithTools.invoke(currentMessages)) as AIMessage;
       console.log("Model response:", response);
 
       // Add the response to messages
@@ -255,7 +256,7 @@ export async function processChatRequest(userMessage: string): Promise<string> {
         for (const toolCall of response.tool_calls) {
           const toolName = toolCall.name;
           const toolArgs = toolCall.args;
-          const toolId = toolCall.id;
+          const toolId = toolCall.id!; // AIMessage tool_calls always have an id
 
           // Find the tool
           const selectedTool = tools.find((t) => t.name === toolName);
@@ -267,26 +268,23 @@ export async function processChatRequest(userMessage: string): Promise<string> {
               console.log(`Tool ${toolName} result:`, toolResult);
 
               // Add tool result to messages
-              currentMessages.push({
-                role: "tool",
+              currentMessages.push(new ToolMessage({
                 tool_call_id: toolId,
                 content: JSON.stringify(toolResult, null, 2),
-              });
+              }));
             } catch (error: any) {
               logger.error(`Error executing tool ${toolName}:`, error);
-              currentMessages.push({
-                role: "tool",
+              currentMessages.push(new ToolMessage({
                 tool_call_id: toolId,
                 content: `Error executing tool ${toolName}: ${error.message}`,
-              });
+              }));
             }
           } else {
             logger.warn(`Tool ${toolName} not found`);
-            currentMessages.push({
-              role: "tool",
+            currentMessages.push(new ToolMessage({
               tool_call_id: toolId,
               content: `Tool ${toolName} not found. Available tools: ${tools.map((t) => t.name).join(", ")}`,
-            });
+            }));
           }
         }
 
