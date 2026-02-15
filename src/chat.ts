@@ -250,24 +250,40 @@ export async function processChatRequest(
       iteration++;
       logger.info(`Processing iteration ${iteration} for session ${sessionId}`);
       
-      // Get LLM response
+      // Get LLM response with streaming
       onStep?.({ type: 'thinking' });
-      const response = (await llmWithTools.invoke(currentMessages)) as AIMessage;
-      logger.debug("Model response received", { content: response.content, tool_calls: response.tool_calls });
+      
+      let fullMessage: any = null;
+      const stream = await llmWithTools.stream(currentMessages);
+      
+      for await (const chunk of stream) {
+        if (!fullMessage) {
+          fullMessage = chunk;
+        } else {
+          fullMessage = fullMessage.concat(chunk);
+        }
 
+        if (chunk.content) {
+          onStep?.({ type: 'chunk', content: chunk.content.toString() });
+        }
+      }
+
+      const response = fullMessage as AIMessage;
+      logger.debug("Model response received", { content: response.content, tool_calls: response.tool_calls });
+ 
       // Add the response to messages
       currentMessages.push(response);
-
+ 
       // Check if the model wants to call tools
       if (response.tool_calls && response.tool_calls.length > 0) {
         logger.info(`Model requested ${response.tool_calls.length} tool calls for session ${sessionId}`);
-
+ 
         // Execute all requested tools
         for (const toolCall of response.tool_calls) {
           const toolName = toolCall.name;
           const toolArgs = toolCall.args;
           const toolId = toolCall.id!; // AIMessage tool_calls always have an id
-
+ 
           // Find the tool
           const selectedTool = tools.find((t) => t.name === toolName);
           if (selectedTool) {
@@ -280,7 +296,7 @@ export async function processChatRequest(
               const toolResult = await selectedTool.invoke(toolArgs);
               logger.info(`Tool ${toolName} completed for session ${sessionId}`, { result: toolResult });
               onStep?.({ type: 'tool_completed', name: toolName, result: toolResult });
-
+ 
               // Add tool result to messages
               currentMessages.push(new ToolMessage({
                 tool_call_id: toolId,
@@ -302,7 +318,7 @@ export async function processChatRequest(
             }));
           }
         }
-
+ 
         // Continue to next iteration to let LLM process tool results
         continue;
       } else {

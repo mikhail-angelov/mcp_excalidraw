@@ -169,6 +169,10 @@ function App(): JSX.Element {
   // AI Agent state
   const [aiPanelVisible, setAiPanelVisible] = useState<boolean>(true)
   const [aiStatus, setAiStatus] = useState<AIAgentStatus>('idle')
+  const [currentStreamingMessageId, setCurrentStreamingMessageId] = useState<string | null>(null)
+  const streamingMessageIdRef = useRef<string | null>(null)
+  const [aiPanelWidth, setAiPanelWidth] = useState<number>(350)
+  const [isResizing, setIsResizing] = useState<boolean>(false)
   const [aiMessages, setAiMessages] = useState<AIMessage[]>([
     {
       id: '1',
@@ -179,6 +183,38 @@ function App(): JSX.Element {
   ])
   const [aiInput, setAiInput] = useState<string>('')
   const aiMessagesEndRef = useRef<HTMLDivElement>(null)
+
+  // Resizing logic
+  const handleMouseDown = (e: React.MouseEvent) => {
+    e.preventDefault()
+    setIsResizing(true)
+  }
+
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!isResizing) return
+
+      const newWidth = window.innerWidth - e.clientX
+      const maxWidth = window.innerWidth * 0.8
+      if (newWidth > 250 && newWidth < maxWidth) {
+        setAiPanelWidth(newWidth)
+      }
+    }
+
+    const handleMouseUp = () => {
+      setIsResizing(false)
+    }
+
+    if (isResizing) {
+      window.addEventListener('mousemove', handleMouseMove)
+      window.addEventListener('mouseup', handleMouseUp)
+    }
+
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove)
+      window.removeEventListener('mouseup', handleMouseUp)
+    }
+  }, [isResizing])
 
   // WebSocket connection
   useEffect(() => {
@@ -567,21 +603,51 @@ function App(): JSX.Element {
           let icon = '';
 
           switch (step.type) {
-            case 'iteration_started': content = `Iteration ${step.iteration}`; icon = '🔄'; break;
-            case 'thinking': content = 'Thinking...'; icon = '🧠'; break;
+            case 'iteration_started':
+              streamingMessageIdRef.current = null;
+              setCurrentStreamingMessageId(null);
+              content = `Iteration ${step.iteration}`; icon = '🔄';
+              break;
+            case 'thinking':
+              streamingMessageIdRef.current = null;
+              setCurrentStreamingMessageId(null);
+              content = 'Thinking...'; icon = '🧠';
+              break;
+            case 'chunk':
+              setAiMessages(prev => {
+                const streamId = streamingMessageIdRef.current;
+                if (streamId) {
+                  return prev.map(m => m.id === streamId ? { ...m, content: m.content + step.content } : m);
+                } else {
+                  const newId = `assistant-stream-${Date.now()}`;
+                  streamingMessageIdRef.current = newId;
+                  setCurrentStreamingMessageId(newId);
+                  return [...prev, {
+                    id: newId,
+                    type: 'assistant',
+                    content: step.content,
+                    timestamp: new Date()
+                  }];
+                }
+              });
+              return; // Chunks don't add progress messages
             case 'tool_calls_requested': content = `Calling ${step.toolCalls.length} tools`; icon = '🛠️'; break;
-            case 'tool_invoking': content = `Invoking ${step.name}...`; icon = '🔌'; break;
+            case 'tool_invoking':
+              streamingMessageIdRef.current = null;
+              setCurrentStreamingMessageId(null);
+              content = `Invoking ${step.name}...`; icon = '🔌';
+              break;
             case 'tool_completed': content = `Tool ${step.name} completed`; icon = '✅'; break;
             case 'tool_error': content = `Error in ${step.name}: ${step.error}`; icon = '❌'; break;
-            case 'final_response': content = 'Generating final response...'; icon = '💬'; break;
           }
-
-          setAiMessages(prev => [...prev, {
-            id: `step-${Date.now()}-${Math.random()}`,
-            type: 'step',
-            content: `${icon} ${content}`,
-            timestamp: new Date()
-          }]);
+          if (content) {
+            setAiMessages(prev => [...prev, {
+              id: `step-${Date.now()}-${Math.random()}`,
+              type: 'step',
+              content: `${icon} ${content}`,
+              timestamp: new Date()
+            }]);
+          }
           break
 
         default:
@@ -707,6 +773,8 @@ function App(): JSX.Element {
     setAiMessages(prev => [...prev, userMessage])
     setAiInput('')
     setAiStatus('thinking')
+    streamingMessageIdRef.current = null
+    setCurrentStreamingMessageId(null)
 
     try {
       // Call the new chat API
@@ -727,14 +795,21 @@ function App(): JSX.Element {
       const result = await response.json()
 
       if (result.success) {
-        const aiResponse: AIMessage = {
-          id: (Date.now() + 1).toString(),
-          type: 'assistant',
-          content: result.response,
-          timestamp: new Date()
-        }
-
-        setAiMessages(prev => [...prev, aiResponse])
+        setAiMessages(prev => {
+          const streamId = streamingMessageIdRef.current
+          if (streamId) {
+            return prev.map(m => m.id === streamId ? { ...m, content: result.response } : m)
+          } else {
+            return [...prev, {
+              id: (Date.now() + 1).toString(),
+              type: 'assistant',
+              content: result.response,
+              timestamp: new Date()
+            }]
+          }
+        })
+        streamingMessageIdRef.current = null
+        setCurrentStreamingMessageId(null)
         setAiStatus('idle')
         await syncToBackend()
       } else {
@@ -743,6 +818,8 @@ function App(): JSX.Element {
     } catch (error) {
       console.error('AI response error:', error)
       setAiStatus('error')
+      streamingMessageIdRef.current = null
+      setCurrentStreamingMessageId(null)
 
       const errorMessage: AIMessage = {
         id: (Date.now() + 2).toString(),
@@ -789,63 +866,72 @@ function App(): JSX.Element {
 
   return (
     <div className="app">
-      {/* Header */}
-      <div className="header">
-        <h1>Excalidraw Canvas</h1>
-        <div className="controls">
-          <div className="status">
-            <div className={`status-dot ${isConnected ? 'status-connected' : 'status-disconnected'}`}></div>
-            <span>{isConnected ? 'Connected' : 'Disconnected'}</span>
-          </div>
-
-          {/* Sync Controls */}
-          <div className="sync-controls">
-            <button
-              className={`btn-primary ${syncStatus === 'syncing' ? 'btn-loading' : ''}`}
-              onClick={syncToBackend}
-              disabled={syncStatus === 'syncing' || !excalidrawAPI}
-            >
-              {syncStatus === 'syncing' && <span className="spinner"></span>}
-              {syncStatus === 'syncing' ? 'Syncing...' : 'Sync to Backend'}
-            </button>
-
-            {/* Sync Status */}
-            <div className="sync-status">
-              {syncStatus === 'success' && (
-                <span className="sync-success">✅ Synced</span>
-              )}
-              {syncStatus === 'error' && (
-                <span className="sync-error">❌ Sync Failed</span>
-              )}
-              {lastSyncTime && syncStatus === 'idle' && (
-                <span className="sync-time">
-                  Last sync: {formatSyncTime(lastSyncTime)}
-                </span>
-              )}
+      <div
+        className="left-panel"
+        style={{ marginRight: aiPanelVisible ? aiPanelWidth : 0 }}
+      >
+        {/* Header */}
+        <div className="header">
+          <h1>Excalidraw Canvas</h1>
+          <div className="controls">
+            <div className="status">
+              <div className={`status-dot ${isConnected ? 'status-connected' : 'status-disconnected'}`}></div>
+              <span>{isConnected ? 'Connected' : 'Disconnected'}</span>
             </div>
+
+            {/* Sync Controls */}
+            <div className="sync-controls">
+              <button
+                className={`btn-primary ${syncStatus === 'syncing' ? 'btn-loading' : ''}`}
+                onClick={syncToBackend}
+                disabled={syncStatus === 'syncing' || !excalidrawAPI}
+              >
+                {syncStatus === 'syncing' && <span className="spinner"></span>}
+                {syncStatus === 'syncing' ? 'Syncing...' : 'Sync to Backend'}
+              </button>
+
+              {/* Sync Status */}
+              <div className="sync-status">
+                {syncStatus === 'success' && (
+                  <span className="sync-success">✅ Synced</span>
+                )}
+                {syncStatus === 'error' && (
+                  <span className="sync-error">❌ Sync Failed</span>
+                )}
+                {lastSyncTime && syncStatus === 'idle' && (
+                  <span className="sync-time">
+                    Last sync: {formatSyncTime(lastSyncTime)}
+                  </span>
+                )}
+              </div>
+            </div>
+
+            <button className="btn-secondary" onClick={clearCanvas}>Clear Canvas</button>
           </div>
-
-          <button className="btn-secondary" onClick={clearCanvas}>Clear Canvas</button>
         </div>
-      </div>
 
-      {/* Canvas Container */}
-      <div className="canvas-container">
-        <Excalidraw
-          excalidrawAPI={(api: ExcalidrawAPIRefValue) => setApi(api)}
-          initialData={{
-            elements: [],
-            appState: {
-              theme: 'light',
-              viewBackgroundColor: '#ffffff'
-            }
-          }}
-        />
+        {/* Canvas Container */}
+        <div className="canvas-container">
+          <Excalidraw
+            excalidrawAPI={(api: ExcalidrawAPIRefValue) => setApi(api)}
+            initialData={{
+              elements: [],
+              appState: {
+                theme: 'light',
+                viewBackgroundColor: '#ffffff'
+              }
+            }}
+          />
+        </div>
       </div>
 
       {/* AI Agent Panel */}
       {aiPanelVisible && (
-        <div className="ai-panel">
+        <div className="ai-panel" style={{ width: aiPanelWidth }}>
+          <div
+            className={`ai-resizer ${isResizing ? 'resizing' : ''}`}
+            onMouseDown={handleMouseDown}
+          />
           <div className="ai-panel-header">
             <h3>AI Assistant</h3>
             <div className="ai-panel-controls">
