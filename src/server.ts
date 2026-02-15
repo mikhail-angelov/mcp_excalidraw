@@ -1049,7 +1049,7 @@ app.post('/api/chat', async (req: Request, res: Response) => {
       });
     }
     
-    logger.info('Processing chat request', { message });
+    logger.info('Processing chat request', { sessionId: req.sessionId, messageLength: message.length });
     
     // Dynamically import the chat module
     const chatModule = await import('./chat.js');

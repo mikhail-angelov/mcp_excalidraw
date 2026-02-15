@@ -194,7 +194,7 @@ async function initializeMCPTools(): Promise<boolean> {
 // Main chat function with proper tool calling
 export async function processChatRequest(userMessage: string): Promise<string> {
   try {
-    logger.info("Processing chat request", { userMessage });
+    logger.info("Processing chat request", { messageLength: userMessage.length });
 
     if (!llm) {
       // Fallback to simple pattern matching
