@@ -1,4 +1,4 @@
-# Excalidraw MCP Server & Agent Skill
+# Excalidraw AI Agent, based on MCP Server & LLM
 
 [![CI](https://github.com/yctimlin/mcp_excalidraw/actions/workflows/ci.yml/badge.svg)](https://github.com/yctimlin/mcp_excalidraw/actions/workflows/ci.yml)
 [![Docker Build & Push](https://github.com/yctimlin/mcp_excalidraw/actions/workflows/docker.yml/badge.svg)](https://github.com/yctimlin/mcp_excalidraw/actions/workflows/docker.yml)
@@ -16,7 +16,7 @@ Keywords: Excalidraw agent skill, Excalidraw MCP server, AI diagramming, Claude 
 
 ## Demo
 
-[![MCP Excalidraw Demo](https://img.youtube.com/vi/RRN7AF7QIew/maxresdefault.jpg)](https://youtu.be/RRN7AF7QIew)
+<img width="1415" height="984" alt="image" src="https://github.com/user-attachments/assets/1516ba3e-4546-4b04-a2b0-c80f78023937" />
 
 *Watch AI agents create and manipulate diagrams in real-time on the live canvas*
 
