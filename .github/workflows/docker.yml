@@ -5,9 +5,6 @@ on:
     branches: [ main ]
     tags:
       - 'v*.*.*'
-  pull_request:
-    branches: [ main ]
-  workflow_dispatch:
 
 env:
   REGISTRY: ghcr.io
@@ -86,5 +83,5 @@ jobs:
 
       - name: Test MCP Server image
         run: |
-          docker pull ${{ env.REGISTRY }}/${{ github.actor }}/${{ env.IMAGE_NAME_MCP }}:${{ steps.tag.outputs.value }}
+          docker pull ${{ env.REGISTRY }}/${{ github.actor }}/${{ env.IMAGE_NAME_AGENT }}:${{ steps.tag.outputs.value }}
           echo "MCP Server image pulled successfully"
