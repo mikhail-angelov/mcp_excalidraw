@@ -77,11 +77,14 @@ jobs:
         run: |
           if [[ "${{ github.event_name }}" == "pull_request" ]]; then
             echo "value=pr-${{ github.event.pull_request.number }}" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.ref_type }}" == "tag" ]]; then
+            TAG_NAME="${{ github.ref_name }}"
+            echo "value=${TAG_NAME#v}" >> $GITHUB_OUTPUT
           else
             echo "value=${{ github.ref_name }}" >> $GITHUB_OUTPUT
           fi
 
-      - name: Test MCP Server image
+      - name: Test Agent image
         run: |
           docker pull ${{ env.REGISTRY }}/${{ github.actor }}/${{ env.IMAGE_NAME_AGENT }}:${{ steps.tag.outputs.value }}
-          echo "MCP Server image pulled successfully"
+          echo "Agent image pulled successfully"
