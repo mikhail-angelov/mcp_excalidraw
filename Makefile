@@ -3,7 +3,7 @@
 # Configuration - Dynamically loaded from .env
 VPS_USER = root
 VPS_HOST = $(shell grep '^HOST=' .env | cut -d '=' -f 2)
-VPS_PATH = ~/mcp_excalidraw
+VPS_PATH = /opt/mcp_excalidraw
 IMAGE_NAME = ghcr.io/mikhail-angelov/mcp-excalidraw-agent:latest
 
 .PHONY: build push init-config deploy logs status
@@ -23,7 +23,7 @@ init-config:
 	scp .env $(VPS_USER)@$(VPS_HOST):$(VPS_PATH)/
 
 # 4. Standard deployment: Build, push, pull on VPS, and restart
-deploy: push
+deploy:
 	ssh $(VPS_USER)@$(VPS_HOST) "cd $(VPS_PATH) && \
 		docker compose pull && \
 		docker compose up -d"

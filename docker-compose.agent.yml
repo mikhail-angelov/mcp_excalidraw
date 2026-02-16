@@ -12,8 +12,8 @@ services:
     restart: unless-stopped
     networks:
       - mcp-network
+    command: ["node", "dist/server.js"]
 
 
 networks:
   mcp-network:
-    driver: bridge
