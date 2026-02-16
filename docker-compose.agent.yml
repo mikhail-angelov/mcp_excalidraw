@@ -1,0 +1,19 @@
+version: '3.8'
+
+
+services:
+  agent:
+    image: ghcr.io/mikhail-angelov/mcp-excalidraw-agent:latest
+    container_name: mcp-excalidraw-agent
+    ports:
+      - "127.0.0.1:3007:3000"
+    env_file:
+      - .env
+    restart: unless-stopped
+    networks:
+      - mcp-network
+
+
+networks:
+  mcp-network:
+    driver: bridge

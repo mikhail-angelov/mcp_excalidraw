@@ -59,6 +59,14 @@ interface WebSocketMessage {
   source?: string;
   mermaidDiagram?: string;
   config?: MermaidConfig;
+  requestId?: string;
+  format?: string;
+  background?: boolean;
+  scrollToContent?: boolean;
+  scrollToElementId?: string;
+  zoom?: number;
+  offsetX?: number;
+  offsetY?: number;
 }
 
 interface ApiResponse {
@@ -71,6 +79,18 @@ interface ApiResponse {
 }
 
 type SyncStatus = 'idle' | 'syncing' | 'success' | 'error';
+
+// AI Agent types
+type AIMessageType = 'user' | 'assistant' | 'system' | 'step';
+interface AIMessage {
+  id: string;
+  type: AIMessageType;
+  content: string;
+  timestamp: Date;
+  steps?: any[];
+}
+
+type AIAgentStatus = 'idle' | 'thinking' | 'responding' | 'error';
 
 // Helper function to clean elements for Excalidraw
 const cleanElementForExcalidraw = (element: ServerElement): Partial<ExcalidrawElement> => {
@@ -89,10 +109,10 @@ const cleanElementForExcalidraw = (element: ServerElement): Partial<ExcalidrawEl
 // Helper function to validate and fix element binding data
 const validateAndFixBindings = (elements: Partial<ExcalidrawElement>[]): Partial<ExcalidrawElement>[] => {
   const elementMap = new Map(elements.map(el => [el.id!, el]));
-  
+
   return elements.map(element => {
     const fixedElement = { ...element };
-    
+
     // Validate and fix boundElements
     if (fixedElement.boundElements) {
       if (Array.isArray(fixedElement.boundElements)) {
@@ -100,17 +120,17 @@ const validateAndFixBindings = (elements: Partial<ExcalidrawElement>[]): Partial
           // Ensure binding has required properties
           if (!binding || typeof binding !== 'object') return false;
           if (!binding.id || !binding.type) return false;
-          
+
           // Ensure the referenced element exists
           const referencedElement = elementMap.get(binding.id);
           if (!referencedElement) return false;
-          
+
           // Validate binding type
           if (!['text', 'arrow'].includes(binding.type)) return false;
-          
+
           return true;
         });
-        
+
         // Remove boundElements if empty
         if (fixedElement.boundElements.length === 0) {
           fixedElement.boundElements = null;
@@ -120,7 +140,7 @@ const validateAndFixBindings = (elements: Partial<ExcalidrawElement>[]): Partial
         fixedElement.boundElements = null;
       }
     }
-    
+
     // Validate and fix containerId
     if (fixedElement.containerId) {
       const containerElement = elementMap.get(fixedElement.containerId);
@@ -129,7 +149,7 @@ const validateAndFixBindings = (elements: Partial<ExcalidrawElement>[]): Partial
         fixedElement.containerId = null;
       }
     }
-    
+
     return fixedElement;
   });
 }
@@ -138,10 +158,63 @@ function App(): JSX.Element {
   const [excalidrawAPI, setExcalidrawAPI] = useState<ExcalidrawAPIRefValue | null>(null)
   const [isConnected, setIsConnected] = useState<boolean>(false)
   const websocketRef = useRef<WebSocket | null>(null)
-  
+  const setApi = (api: any) => {
+    console.log('look at api:', api)
+    setExcalidrawAPI(api)
+  }
   // Sync state management
   const [syncStatus, setSyncStatus] = useState<SyncStatus>('idle')
   const [lastSyncTime, setLastSyncTime] = useState<Date | null>(null)
+
+  // AI Agent state
+  const [aiPanelVisible, setAiPanelVisible] = useState<boolean>(true)
+  const [aiStatus, setAiStatus] = useState<AIAgentStatus>('idle')
+  const [currentStreamingMessageId, setCurrentStreamingMessageId] = useState<string | null>(null)
+  const streamingMessageIdRef = useRef<string | null>(null)
+  const [aiPanelWidth, setAiPanelWidth] = useState<number>(350)
+  const [isResizing, setIsResizing] = useState<boolean>(false)
+  const [aiMessages, setAiMessages] = useState<AIMessage[]>([
+    {
+      id: '1',
+      type: 'assistant',
+      content: 'Hello! I\'m your AI assistant for Excalidraw. I can help you create diagrams, explain elements, and assist with your drawing tasks. How can I help you today?',
+      timestamp: new Date()
+    }
+  ])
+  const [aiInput, setAiInput] = useState<string>('')
+  const aiMessagesEndRef = useRef<HTMLDivElement>(null)
+
+  // Resizing logic
+  const handleMouseDown = (e: React.MouseEvent) => {
+    e.preventDefault()
+    setIsResizing(true)
+  }
+
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!isResizing) return
+
+      const newWidth = window.innerWidth - e.clientX
+      const maxWidth = window.innerWidth * 0.8
+      if (newWidth > 250 && newWidth < maxWidth) {
+        setAiPanelWidth(newWidth)
+      }
+    }
+
+    const handleMouseUp = () => {
+      setIsResizing(false)
+    }
+
+    if (isResizing) {
+      window.addEventListener('mousemove', handleMouseMove)
+      window.addEventListener('mouseup', handleMouseUp)
+    }
+
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove)
+      window.removeEventListener('mouseup', handleMouseUp)
+    }
+  }, [isResizing])
 
   // WebSocket connection
   useEffect(() => {
@@ -157,7 +230,7 @@ function App(): JSX.Element {
   useEffect(() => {
     if (excalidrawAPI) {
       loadExistingElements()
-      
+
       // Ensure WebSocket is connected for real-time updates
       if (!isConnected) {
         connectWebSocket()
@@ -169,7 +242,7 @@ function App(): JSX.Element {
     try {
       const response = await fetch('/api/elements')
       const result: ApiResponse = await response.json()
-      
+
       if (result.success && result.elements && result.elements.length > 0) {
         const cleanedElements = result.elements.map(cleanElementForExcalidraw)
         const convertedElements = convertToExcalidrawElements(cleanedElements, { regenerateIds: false })
@@ -187,17 +260,17 @@ function App(): JSX.Element {
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
     const wsUrl = `${protocol}//${window.location.host}`
-    
+
     websocketRef.current = new WebSocket(wsUrl)
-    
+
     websocketRef.current.onopen = () => {
       setIsConnected(true)
-      
+
       if (excalidrawAPI) {
         setTimeout(loadExistingElements, 100)
       }
     }
-    
+
     websocketRef.current.onmessage = (event: MessageEvent) => {
       try {
         const data: WebSocketMessage = JSON.parse(event.data)
@@ -206,16 +279,16 @@ function App(): JSX.Element {
         console.error('Error parsing WebSocket message:', error, event.data)
       }
     }
-    
+
     websocketRef.current.onclose = (event: CloseEvent) => {
       setIsConnected(false)
-      
+
       // Reconnect after 3 seconds if not a clean close
       if (event.code !== 1000) {
         setTimeout(connectWebSocket, 3000)
       }
     }
-    
+
     websocketRef.current.onerror = (error: Event) => {
       console.error('WebSocket error:', error)
       setIsConnected(false)
@@ -268,13 +341,13 @@ function App(): JSX.Element {
             }
           }
           break
-          
+
         case 'element_updated':
           if (data.element) {
             const cleanedUpdatedElement = cleanElementForExcalidraw(data.element)
             // Preserve server IDs so we can replace the existing element by id.
             const convertedUpdatedElement = convertToExcalidrawElements([cleanedUpdatedElement], { regenerateIds: false })[0]
-            const updatedElements = currentElements.map(el =>
+            const updatedElements = currentElements.map((el: any) =>
               el.id === data.element!.id ? convertedUpdatedElement : el
             )
             excalidrawAPI.updateScene({
@@ -286,7 +359,7 @@ function App(): JSX.Element {
 
         case 'element_deleted':
           if (data.elementId) {
-            const filteredElements = currentElements.filter(el => el.id !== data.elementId)
+            const filteredElements = currentElements.filter((el: any) => el.id !== data.elementId)
             excalidrawAPI.updateScene({
               elements: filteredElements,
               captureUpdate: CaptureUpdateAction.NEVER
@@ -295,6 +368,7 @@ function App(): JSX.Element {
           break
 
         case 'elements_batch_created':
+          console.log('elements_batch_created', data.elements?.length)
           if (data.elements) {
             const cleanedBatchElements = data.elements.map(cleanElementForExcalidraw)
             const hasBoundArrows = cleanedBatchElements.some((el: any) => el.start || el.end)
@@ -317,16 +391,16 @@ function App(): JSX.Element {
             }
           }
           break
-          
+
         case 'elements_synced':
           console.log(`Sync confirmed by server: ${data.count} elements`)
           // Sync confirmation already handled by HTTP response
           break
-          
+
         case 'sync_status':
           console.log(`Server sync status: ${data.count} elements`)
           break
-          
+
         case 'canvas_cleared':
           console.log('Canvas cleared by server')
           excalidrawAPI.updateScene({
@@ -398,7 +472,7 @@ function App(): JSX.Element {
                         requestId: data.requestId,
                         error: (readerError as Error).message
                       })
-                    }).catch(() => {})
+                    }).catch(() => { })
                   }
                 }
                 reader.onerror = async () => {
@@ -410,7 +484,7 @@ function App(): JSX.Element {
                       requestId: data.requestId,
                       error: reader.error?.message || 'FileReader failed'
                     })
-                  }).catch(() => {})
+                  }).catch(() => { })
                 }
                 reader.readAsDataURL(blob)
               }
@@ -437,10 +511,13 @@ function App(): JSX.Element {
                 const allElements = excalidrawAPI.getSceneElements()
                 if (allElements.length > 0) {
                   excalidrawAPI.scrollToContent(allElements, { fitToViewport: true, animate: true })
+                  // Create a mutable copy of the elements array
+                  // const elementsCopy = [...allElements]
+                  // excalidrawAPI.scrollToContent(elementsCopy, { fitToViewport: true, animate: true })
                 }
               } else if (data.scrollToElementId) {
                 const allElements = excalidrawAPI.getSceneElements()
-                const targetElement = allElements.find(el => el.id === data.scrollToElementId)
+                const targetElement = allElements.find((el: any) => el.id === data.scrollToElementId)
                 if (targetElement) {
                   excalidrawAPI.scrollToContent([targetElement], { fitToViewport: false, animate: true })
                 } else {
@@ -481,7 +558,7 @@ function App(): JSX.Element {
                   requestId: data.requestId,
                   error: (viewportError as Error).message
                 })
-              }).catch(() => {})
+              }).catch(() => { })
             }
           }
           break
@@ -518,7 +595,61 @@ function App(): JSX.Element {
             }
           }
           break
-          
+
+        case 'chat_step':
+          console.log('Received chat step:', (data as any).step)
+          const step = (data as any).step;
+          let content = '';
+          let icon = '';
+
+          switch (step.type) {
+            case 'iteration_started':
+              streamingMessageIdRef.current = null;
+              setCurrentStreamingMessageId(null);
+              content = `Iteration ${step.iteration}`; icon = '🔄';
+              break;
+            case 'thinking':
+              streamingMessageIdRef.current = null;
+              setCurrentStreamingMessageId(null);
+              content = 'Thinking...'; icon = '🧠';
+              break;
+            case 'chunk':
+              setAiMessages(prev => {
+                const streamId = streamingMessageIdRef.current;
+                if (streamId) {
+                  return prev.map(m => m.id === streamId ? { ...m, content: m.content + step.content } : m);
+                } else {
+                  const newId = `assistant-stream-${Date.now()}`;
+                  streamingMessageIdRef.current = newId;
+                  setCurrentStreamingMessageId(newId);
+                  return [...prev, {
+                    id: newId,
+                    type: 'assistant',
+                    content: step.content,
+                    timestamp: new Date()
+                  }];
+                }
+              });
+              return; // Chunks don't add progress messages
+            case 'tool_calls_requested': content = `Calling ${step.toolCalls.length} tools`; icon = '🛠️'; break;
+            case 'tool_invoking':
+              streamingMessageIdRef.current = null;
+              setCurrentStreamingMessageId(null);
+              content = `Invoking ${step.name}...`; icon = '🔌';
+              break;
+            case 'tool_completed': content = `Tool ${step.name} completed`; icon = '✅'; break;
+            case 'tool_error': content = `Error in ${step.name}: ${step.error}`; icon = '❌'; break;
+          }
+          if (content) {
+            setAiMessages(prev => [...prev, {
+              id: `step-${Date.now()}-${Math.random()}`,
+              type: 'step',
+              content: `${icon} ${content}`,
+              timestamp: new Date()
+            }]);
+          }
+          break
+
         default:
           console.log('Unknown WebSocket message type:', data.type)
       }
@@ -550,20 +681,20 @@ function App(): JSX.Element {
       console.warn('Excalidraw API not available')
       return
     }
-    
+
     setSyncStatus('syncing')
-    
+
     try {
       // 1. Get current elements
       const currentElements = excalidrawAPI.getSceneElements()
       console.log(`Syncing ${currentElements.length} elements to backend`)
-      
+
       // Filter out deleted elements
-      const activeElements = currentElements.filter(el => !el.isDeleted)
-      
+      const activeElements = currentElements.filter((el: any) => !el.isDeleted)
+
       // 3. Convert to backend format
       const backendElements = activeElements.map(convertToBackendFormat)
-      
+
       // 4. Send to backend
       const response = await fetch('/api/elements/sync', {
         method: 'POST',
@@ -575,13 +706,13 @@ function App(): JSX.Element {
           timestamp: new Date().toISOString()
         })
       })
-      
+
       if (response.ok) {
         const result: ApiResponse = await response.json()
         setSyncStatus('success')
         setLastSyncTime(new Date())
         console.log(`Sync successful: ${result.count} elements synced`)
-        
+
         // Reset status after 2 seconds
         setTimeout(() => setSyncStatus('idle'), 2000)
       } else {
@@ -601,23 +732,23 @@ function App(): JSX.Element {
         // Get all current elements and delete them from backend
         const response = await fetch('/api/elements')
         const result: ApiResponse = await response.json()
-        
+
         if (result.success && result.elements) {
-          const deletePromises = result.elements.map(element => 
+          const deletePromises = result.elements.map(element =>
             fetch(`/api/elements/${element.id}`, { method: 'DELETE' })
           )
           await Promise.all(deletePromises)
         }
-        
+
         // Clear the frontend canvas
-        excalidrawAPI.updateScene({ 
+        excalidrawAPI.updateScene({
           elements: [],
           captureUpdate: CaptureUpdateAction.IMMEDIATELY
         })
       } catch (error) {
         console.error('Error clearing canvas:', error)
         // Still clear frontend even if backend fails
-        excalidrawAPI.updateScene({ 
+        excalidrawAPI.updateScene({
           elements: [],
           captureUpdate: CaptureUpdateAction.IMMEDIATELY
         })
@@ -625,61 +756,286 @@ function App(): JSX.Element {
     }
   }
 
+  // AI Agent functions
+  const handleAISendMessage = async (): Promise<void> => {
+    if (!aiInput.trim() || aiStatus === 'thinking' || aiStatus === 'responding') {
+      return
+    }
+
+    const userMessage: AIMessage = {
+      id: Date.now().toString(),
+      type: 'user',
+      content: aiInput.trim(),
+      timestamp: new Date()
+    }
+
+    // Add user message
+    setAiMessages(prev => [...prev, userMessage])
+    setAiInput('')
+    setAiStatus('thinking')
+    streamingMessageIdRef.current = null
+    setCurrentStreamingMessageId(null)
+
+    try {
+      // Call the new chat API
+      const response = await fetch('/api/chat', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          message: userMessage.content
+        })
+      })
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`)
+      }
+
+      const result = await response.json()
+
+      if (result.success) {
+        setAiMessages(prev => {
+          const streamId = streamingMessageIdRef.current
+          if (streamId) {
+            return prev.map(m => m.id === streamId ? { ...m, content: result.response } : m)
+          } else {
+            return [...prev, {
+              id: (Date.now() + 1).toString(),
+              type: 'assistant',
+              content: result.response,
+              timestamp: new Date()
+            }]
+          }
+        })
+        streamingMessageIdRef.current = null
+        setCurrentStreamingMessageId(null)
+        setAiStatus('idle')
+        await syncToBackend()
+      } else {
+        throw new Error(result.error || 'Unknown error from chat API')
+      }
+    } catch (error) {
+      console.error('AI response error:', error)
+      setAiStatus('error')
+      streamingMessageIdRef.current = null
+      setCurrentStreamingMessageId(null)
+
+      const errorMessage: AIMessage = {
+        id: (Date.now() + 2).toString(),
+        type: 'assistant',
+        content: `Sorry, I encountered an error processing your request: ${(error as Error).message}`,
+        timestamp: new Date()
+      }
+
+      setAiMessages(prev => [...prev, errorMessage])
+    }
+  }
+
+  const handleAIKeyPress = (e: React.KeyboardEvent<HTMLTextAreaElement>): void => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault()
+      handleAISendMessage()
+    }
+  }
+
+  const clearAIConversation = (): void => {
+    setAiMessages([
+      {
+        id: '1',
+        type: 'assistant',
+        content: 'Hello! I\'m your AI assistant for Excalidraw. I can help you create diagrams, explain elements, and assist with your drawing tasks. How can I help you today?',
+        timestamp: new Date()
+      }
+    ])
+  }
+
+  // Auto-scroll to bottom when messages change
+  useEffect(() => {
+    if (aiMessagesEndRef.current) {
+      aiMessagesEndRef.current.scrollIntoView({ behavior: 'smooth' })
+    }
+  }, [aiMessages, aiStatus])
+
+  const formatMessageTime = (date: Date): string => {
+    return date.toLocaleTimeString('zh-CN', {
+      hour: '2-digit',
+      minute: '2-digit'
+    })
+  }
+
   return (
     <div className="app">
-      {/* Header */}
-      <div className="header">
-        <h1>Excalidraw Canvas</h1>
-        <div className="controls">
-          <div className="status">
-            <div className={`status-dot ${isConnected ? 'status-connected' : 'status-disconnected'}`}></div>
-            <span>{isConnected ? 'Connected' : 'Disconnected'}</span>
-          </div>
-          
-          {/* Sync Controls */}
-          <div className="sync-controls">
-            <button 
-              className={`btn-primary ${syncStatus === 'syncing' ? 'btn-loading' : ''}`}
-              onClick={syncToBackend}
-              disabled={syncStatus === 'syncing' || !excalidrawAPI}
-            >
-              {syncStatus === 'syncing' && <span className="spinner"></span>}
-              {syncStatus === 'syncing' ? 'Syncing...' : 'Sync to Backend'}
-            </button>
-            
-            {/* Sync Status */}
-            <div className="sync-status">
-              {syncStatus === 'success' && (
-                <span className="sync-success">✅ Synced</span>
-              )}
-              {syncStatus === 'error' && (
-                <span className="sync-error">❌ Sync Failed</span>
-              )}
-              {lastSyncTime && syncStatus === 'idle' && (
-                <span className="sync-time">
-                  Last sync: {formatSyncTime(lastSyncTime)}
-                </span>
-              )}
+      <div
+        className="left-panel"
+        style={{ marginRight: aiPanelVisible ? aiPanelWidth : 0 }}
+      >
+        {/* Header */}
+        <div className="header">
+          <h1>Excalidraw Canvas</h1>
+          <div className="controls">
+            <div className="status">
+              <div className={`status-dot ${isConnected ? 'status-connected' : 'status-disconnected'}`}></div>
+              <span>{isConnected ? 'Connected' : 'Disconnected'}</span>
             </div>
+
+            {/* Sync Controls */}
+            <div className="sync-controls">
+              <button
+                className={`btn-primary ${syncStatus === 'syncing' ? 'btn-loading' : ''}`}
+                onClick={syncToBackend}
+                disabled={syncStatus === 'syncing' || !excalidrawAPI}
+              >
+                {syncStatus === 'syncing' && <span className="spinner"></span>}
+                {syncStatus === 'syncing' ? 'Syncing...' : 'Sync to Backend'}
+              </button>
+
+              {/* Sync Status */}
+              <div className="sync-status">
+                {syncStatus === 'success' && (
+                  <span className="sync-success">✅ Synced</span>
+                )}
+                {syncStatus === 'error' && (
+                  <span className="sync-error">❌ Sync Failed</span>
+                )}
+                {lastSyncTime && syncStatus === 'idle' && (
+                  <span className="sync-time">
+                    Last sync: {formatSyncTime(lastSyncTime)}
+                  </span>
+                )}
+              </div>
+            </div>
+
+            <button className="btn-secondary" onClick={clearCanvas}>Clear Canvas</button>
           </div>
-          
-          <button className="btn-secondary" onClick={clearCanvas}>Clear Canvas</button>
+        </div>
+
+        {/* Canvas Container */}
+        <div className="canvas-container">
+          <Excalidraw
+            excalidrawAPI={(api: ExcalidrawAPIRefValue) => setApi(api)}
+            initialData={{
+              elements: [],
+              appState: {
+                theme: 'light',
+                viewBackgroundColor: '#ffffff'
+              }
+            }}
+          />
         </div>
       </div>
 
-      {/* Canvas Container */}
-      <div className="canvas-container">
-        <Excalidraw
-          excalidrawAPI={(api: ExcalidrawAPIRefValue) => setExcalidrawAPI(api)}
-          initialData={{
-            elements: [],
-            appState: {
-              theme: 'light',
-              viewBackgroundColor: '#ffffff'
-            }
-          }}
-        />
-      </div>
+      {/* AI Agent Panel */}
+      {aiPanelVisible && (
+        <div className="ai-panel" style={{ width: aiPanelWidth }}>
+          <div
+            className={`ai-resizer ${isResizing ? 'resizing' : ''}`}
+            onMouseDown={handleMouseDown}
+          />
+          <div className="ai-panel-header">
+            <h3>AI Assistant</h3>
+            <div className="ai-panel-controls">
+              <button
+                className="ai-status"
+                title={aiStatus === 'thinking' ? 'AI is thinking...' : aiStatus === 'error' ? 'AI error' : 'AI ready'}
+              >
+                <div className={`ai-status-dot ${aiStatus}`}></div>
+                <span>
+                  {aiStatus === 'thinking' ? 'Thinking...' :
+                    aiStatus === 'error' ? 'Error' :
+                      aiStatus === 'responding' ? 'Responding...' : 'Ready'}
+                </span>
+              </button>
+              <button
+                className="btn-secondary btn-small"
+                onClick={clearAIConversation}
+                title="Clear conversation"
+              >
+                Clear
+              </button>
+              <button
+                className="btn-secondary btn-small"
+                onClick={() => setAiPanelVisible(false)}
+                title="Hide panel"
+              >
+                ×
+              </button>
+            </div>
+          </div>
+
+          <div className="ai-messages">
+            {aiMessages.map((message) => (
+              <div
+                key={message.id}
+                className={`ai-message ${message.type}`}
+              >
+                <div className="ai-message-header">
+                  <span className="ai-message-sender">
+                    {message.type === 'user' ? 'You' :
+                      message.type === 'assistant' ? 'AI Assistant' :
+                        message.type === 'step' ? 'Progress' : 'System'}
+                  </span>
+                  <span className="ai-message-time">
+                    {formatMessageTime(message.timestamp)}
+                  </span>
+                </div>
+                <div className="ai-message-content">
+                  {message.content}
+                </div>
+              </div>
+            ))}
+            {aiStatus === 'thinking' && (
+              <div className="ai-thinking-container">
+                <div className="ai-thinking">
+                  <div className="thinking-dots">
+                    <span>.</span>
+                    <span>.</span>
+                    <span>.</span>
+                  </div>
+                </div>
+              </div>
+            )}
+            <div ref={aiMessagesEndRef} />
+          </div>
+
+          <div className="ai-input-container">
+            <textarea
+              className="ai-input"
+              value={aiInput}
+              onChange={(e) => setAiInput(e.target.value)}
+              onKeyDown={handleAIKeyPress}
+              placeholder=""
+              disabled={aiStatus === 'thinking' || aiStatus === 'responding'}
+              rows={3}
+            />
+            <button
+              className="btn-primary ai-send-button"
+              onClick={handleAISendMessage}
+              disabled={!aiInput.trim() || aiStatus === 'thinking' || aiStatus === 'responding'}
+            >
+              {aiStatus === 'thinking' ? (
+                <>
+                  <span className="spinner-small"></span>
+                  Thinking...
+                </>
+              ) : (
+                'Send'
+              )}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* AI Panel Toggle Button */}
+      {!aiPanelVisible && (
+        <button
+          className="toggle-ai-panel"
+          onClick={() => setAiPanelVisible(true)}
+          title="Show AI Assistant"
+        >
+          🤖
+        </button>
+      )}
     </div>
   )
 }

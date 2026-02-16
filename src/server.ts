@@ -1,5 +1,6 @@
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
+import cookieParser from 'cookie-parser';
 import { WebSocketServer } from 'ws';
 import { createServer } from 'http';
 import path from 'path';
@@ -7,8 +8,6 @@ import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import logger from './utils/logger.js';
 import {
-  elements,
-  snapshots,
   generateId,
   EXCALIDRAW_ELEMENT_TYPES,
   ServerElement,
@@ -24,6 +23,36 @@ import {
 } from './types.js';
 import { z } from 'zod';
 import WebSocket from 'ws';
+import { sessionHandler } from './middleware/auth.js';
+
+// In-memory storage for Excalidraw elements, keyed by sessionId
+const sessionElements = new Map<string, Map<string, ServerElement>>();
+// In-memory storage for snapshots, keyed by sessionId
+const sessionSnapshots = new Map<string, Map<string, Snapshot>>();
+
+// Helper functions to get session-specific storage
+function getSessionElements(sessionId: string): Map<string, ServerElement> {
+  if (!sessionElements.has(sessionId)) {
+    sessionElements.set(sessionId, new Map());
+  }
+  return sessionElements.get(sessionId)!;
+}
+
+function getSessionSnapshots(sessionId: string): Map<string, Snapshot> {
+  if (!sessionSnapshots.has(sessionId)) {
+    sessionSnapshots.set(sessionId, new Map());
+  }
+  return sessionSnapshots.get(sessionId)!;
+}
+
+// Extend Request type to include sessionId
+declare global {
+  namespace Express {
+    interface Request {
+      sessionId?: string;
+    }
+  }
+}
 
 // Load environment variables
 dotenv.config();
@@ -38,6 +67,10 @@ const wss = new WebSocketServer({ server });
 // Middleware
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
+app.use(cookieParser());
+
+// Apply session handling middleware to all API routes
+app.use('/api', sessionHandler);
 
 // Serve static files from the build directory
 const staticDir = path.join(__dirname, '../dist');
@@ -46,10 +79,15 @@ app.use(express.static(staticDir));
 app.use(express.static(path.join(__dirname, '../dist/frontend')));
 
 // WebSocket connections
-const clients = new Set<WebSocket>();
+// WebSocket connections grouped by sessionId
+const sessionClients = new Map<string, Set<WebSocket>>();
 
-// Broadcast to all connected clients
-function broadcast(message: WebSocketMessage): void {
+// Broadcast to all connected clients in a specific session
+function broadcast(sessionId: string, message: WebSocketMessage): void {
+  if (!sessionId) return;
+  const clients = sessionClients.get(sessionId);
+  if (!clients) return;
+
   const data = JSON.stringify(message);
   clients.forEach(client => {
     if (client.readyState === WebSocket.OPEN) {
@@ -59,9 +97,21 @@ function broadcast(message: WebSocketMessage): void {
 }
 
 // WebSocket connection handling
-wss.on('connection', (ws: WebSocket) => {
+wss.on('connection', (ws: WebSocket, req: any) => {
+  // Simple cookie parser for WS
+  const cookieHeader = req.headers.cookie || '';
+  const match = cookieHeader.match(/mcp_sid=([^;]+)/);
+  const sessionId = match ? match[1] : (req.headers['x-session-id'] as string) || 'default-session';
+
+  if (!sessionClients.has(sessionId)) {
+    sessionClients.set(sessionId, new Set());
+  }
+  const clients = sessionClients.get(sessionId)!;
   clients.add(ws);
-  logger.info('New WebSocket connection established');
+
+  logger.info(`New WebSocket connection established for session: ${sessionId}`);
+  
+  const elements = getSessionElements(sessionId);
   
   // Send current elements to new client
   const initialMessage: InitialElementsMessage = {
@@ -80,11 +130,14 @@ wss.on('connection', (ws: WebSocket) => {
   
   ws.on('close', () => {
     clients.delete(ws);
-    logger.info('WebSocket connection closed');
+    if (clients.size === 0) {
+      sessionClients.delete(sessionId);
+    }
+    logger.info(`WebSocket connection closed for session: ${sessionId}`);
   });
   
   ws.on('error', (error) => {
-    logger.error('WebSocket error:', error);
+    logger.error(`WebSocket error for session ${sessionId}:`, error);
     clients.delete(ws);
   });
 });
@@ -161,6 +214,8 @@ const UpdateElementSchema = z.object({
 // Get all elements
 app.get('/api/elements', (req: Request, res: Response) => {
   try {
+    const sessionId = req.sessionId!;
+    const elements = getSessionElements(sessionId);
     const elementsArray = Array.from(elements.values());
     res.json({
       success: true,
@@ -179,8 +234,11 @@ app.get('/api/elements', (req: Request, res: Response) => {
 // Create new element
 app.post('/api/elements', (req: Request, res: Response) => {
   try {
+    const sessionId = req.sessionId!;
     const params = CreateElementSchema.parse(req.body);
-    logger.info('Creating element via API', { type: params.type });
+    logger.info('Creating element via API', { type: params.type, sessionId });
+
+    const elements = getSessionElements(sessionId);
 
     // Prioritize passed ID (for MCP sync), otherwise generate new ID
     const id = params.id || generateId();
@@ -194,12 +252,12 @@ app.post('/api/elements', (req: Request, res: Response) => {
 
     elements.set(id, element);
     
-    // Broadcast to all connected clients
+    // Broadcast to all connected clients in session
     const message: ElementCreatedMessage = {
       type: 'element_created',
       element: element
     };
-    broadcast(message);
+    broadcast(sessionId, message);
     
     res.json({
       success: true,
@@ -217,6 +275,7 @@ app.post('/api/elements', (req: Request, res: Response) => {
 // Update element
 app.put('/api/elements/:id', (req: Request, res: Response) => {
   try {
+    const sessionId = req.sessionId!;
     const { id } = req.params;
     const updates = UpdateElementSchema.parse({ id, ...req.body });
     
@@ -227,6 +286,7 @@ app.put('/api/elements/:id', (req: Request, res: Response) => {
       });
     }
     
+    const elements = getSessionElements(sessionId);
     const existingElement = elements.get(id);
     if (!existingElement) {
       return res.status(404).json({
@@ -244,12 +304,12 @@ app.put('/api/elements/:id', (req: Request, res: Response) => {
 
     elements.set(id, updatedElement);
     
-    // Broadcast to all connected clients
+    // Broadcast to all connected clients in session
     const message: ElementUpdatedMessage = {
       type: 'element_updated',
       element: updatedElement
     };
-    broadcast(message);
+    broadcast(sessionId, message);
     
     res.json({
       success: true,
@@ -267,15 +327,17 @@ app.put('/api/elements/:id', (req: Request, res: Response) => {
 // Clear all elements (must be before /:id route)
 app.delete('/api/elements/clear', (req: Request, res: Response) => {
   try {
+    const sessionId = req.sessionId!;
+    const elements = getSessionElements(sessionId);
     const count = elements.size;
     elements.clear();
 
-    broadcast({
+    broadcast(sessionId, {
       type: 'canvas_cleared',
       timestamp: new Date().toISOString()
     });
 
-    logger.info(`Canvas cleared: ${count} elements removed`);
+    logger.info(`Canvas cleared for session ${sessionId}: ${count} elements removed`);
 
     res.json({
       success: true,
@@ -294,6 +356,7 @@ app.delete('/api/elements/clear', (req: Request, res: Response) => {
 // Delete element
 app.delete('/api/elements/:id', (req: Request, res: Response) => {
   try {
+    const sessionId = req.sessionId!;
     const { id } = req.params;
     
     if (!id) {
@@ -303,6 +366,7 @@ app.delete('/api/elements/:id', (req: Request, res: Response) => {
       });
     }
     
+    const elements = getSessionElements(sessionId);
     if (!elements.has(id)) {
       return res.status(404).json({
         success: false,
@@ -312,12 +376,12 @@ app.delete('/api/elements/:id', (req: Request, res: Response) => {
     
     elements.delete(id);
     
-    // Broadcast to all connected clients
+    // Broadcast to all connected clients in session
     const message: ElementDeletedMessage = {
       type: 'element_deleted',
       elementId: id!
     };
-    broadcast(message);
+    broadcast(sessionId, message);
     
     res.json({
       success: true,
@@ -335,7 +399,9 @@ app.delete('/api/elements/:id', (req: Request, res: Response) => {
 // Query elements with filters
 app.get('/api/elements/search', (req: Request, res: Response) => {
   try {
+    const sessionId = req.sessionId!;
     const { type, ...filters } = req.query;
+    const elements = getSessionElements(sessionId);
     let results = Array.from(elements.values());
     
     // Filter by type if specified
@@ -369,6 +435,7 @@ app.get('/api/elements/search', (req: Request, res: Response) => {
 // Get element by ID
 app.get('/api/elements/:id', (req: Request, res: Response) => {
   try {
+    const sessionId = req.sessionId!;
     const { id } = req.params;
     
     if (!id) {
@@ -378,6 +445,7 @@ app.get('/api/elements/:id', (req: Request, res: Response) => {
       });
     }
     
+    const elements = getSessionElements(sessionId);
     const element = elements.get(id);
     
     if (!element) {
@@ -453,7 +521,8 @@ function computeEdgePoint(
 }
 
 // Helper: resolve arrow bindings in a batch
-function resolveArrowBindings(batchElements: ServerElement[]): void {
+function resolveArrowBindings(batchElements: ServerElement[], sessionId: string): void {
+  const elements = getSessionElements(sessionId);
   const elementMap = new Map<string, ServerElement>();
   batchElements.forEach(el => elementMap.set(el.id, el));
 
@@ -535,6 +604,7 @@ function resolveArrowBindings(batchElements: ServerElement[]): void {
 // Batch create elements
 app.post('/api/elements/batch', (req: Request, res: Response) => {
   try {
+    const sessionId = req.sessionId!;
     const { elements: elementsToCreate } = req.body;
 
     if (!Array.isArray(elementsToCreate)) {
@@ -562,17 +632,18 @@ app.post('/api/elements/batch', (req: Request, res: Response) => {
     });
 
     // Resolve arrow bindings (computes positions, startBinding, endBinding, boundElements)
-    resolveArrowBindings(createdElements);
+    resolveArrowBindings(createdElements, sessionId);
 
     // Store all elements after binding resolution
+    const elements = getSessionElements(sessionId);
     createdElements.forEach(el => elements.set(el.id, el));
 
-    // Broadcast to all connected clients
+    // Broadcast to all connected clients in session
     const message: BatchCreatedMessage = {
       type: 'elements_batch_created',
       elements: createdElements
     };
-    broadcast(message);
+    broadcast(sessionId, message);
 
     res.json({
       success: true,
@@ -605,8 +676,9 @@ app.post('/api/elements/from-mermaid', (req: Request, res: Response) => {
       hasConfig: !!config 
     });
     
-    // Broadcast to all WebSocket clients to process the Mermaid diagram
-    broadcast({
+    // Broadcast to all WebSocket clients in session to process the Mermaid diagram
+    const sessionId = req.sessionId!;
+    broadcast(sessionId, {
       type: 'mermaid_convert',
       mermaidDiagram,
       config: config || {},
@@ -647,6 +719,8 @@ app.post('/api/elements/sync', (req: Request, res: Response) => {
       });
     }
     
+    const sessionId = req.sessionId!;
+    const elements = getSessionElements(sessionId);
     // Record element count before sync
     const beforeCount = elements.size;
     
@@ -683,10 +757,10 @@ app.post('/api/elements/sync', (req: Request, res: Response) => {
       }
     });
     
-    logger.info(`Sync completed: ${successCount}/${frontendElements.length} elements synced`);
+    logger.info(`Sync completed for session ${sessionId}: ${successCount}/${frontendElements.length} elements synced`);
     
-    // 3. Broadcast sync event to all WebSocket clients
-    broadcast({
+    // 3. Broadcast sync event to all WebSocket clients in session
+    broadcast(sessionId, {
       type: 'elements_synced',
       count: successCount,
       timestamp: new Date().toISOString(),
@@ -732,10 +806,12 @@ app.post('/api/export/image', (req: Request, res: Response) => {
       });
     }
 
-    if (clients.size === 0) {
+    const sessionId = req.sessionId!;
+    const clients = sessionClients.get(sessionId);
+    if (!clients || clients.size === 0) {
       return res.status(503).json({
         success: false,
-        error: 'No frontend client connected. Open the canvas in a browser first.'
+        error: 'No frontend client connected for this session. Open the canvas in a browser first.'
       });
     }
 
@@ -750,7 +826,8 @@ app.post('/api/export/image', (req: Request, res: Response) => {
       pendingExports.set(requestId, { resolve, reject, timeout });
     });
 
-    broadcast({
+
+    broadcast(sessionId, {
       type: 'export_image_request',
       requestId,
       format,
@@ -830,11 +907,13 @@ const pendingViewports = new Map<string, PendingViewport>();
 app.post('/api/viewport', (req: Request, res: Response) => {
   try {
     const { scrollToContent, scrollToElementId, zoom, offsetX, offsetY } = req.body;
+    const sessionId = req.sessionId!;
 
-    if (clients.size === 0) {
+    const clients = sessionClients.get(sessionId);
+    if (!clients || clients.size === 0) {
       return res.status(503).json({
         success: false,
-        error: 'No frontend client connected. Open the canvas in a browser first.'
+        error: 'No frontend client connected for this session. Open the canvas in a browser first.'
       });
     }
 
@@ -849,7 +928,7 @@ app.post('/api/viewport', (req: Request, res: Response) => {
       pendingViewports.set(requestId, { resolve, reject, timeout });
     });
 
-    broadcast({
+    broadcast(sessionId, {
       type: 'set_viewport',
       requestId,
       scrollToContent,
@@ -928,6 +1007,10 @@ app.post('/api/snapshots', (req: Request, res: Response) => {
       });
     }
 
+    const sessionId = req.sessionId!;
+    const elements = getSessionElements(sessionId);
+    const snapshots = getSessionSnapshots(sessionId);
+
     const snapshot: Snapshot = {
       name,
       elements: Array.from(elements.values()),
@@ -935,7 +1018,7 @@ app.post('/api/snapshots', (req: Request, res: Response) => {
     };
 
     snapshots.set(name, snapshot);
-    logger.info(`Snapshot saved: "${name}" with ${snapshot.elements.length} elements`);
+    logger.info(`Snapshot saved for session ${sessionId}: "${name}" with ${snapshot.elements.length} elements`);
 
     res.json({
       success: true,
@@ -955,6 +1038,8 @@ app.post('/api/snapshots', (req: Request, res: Response) => {
 // Snapshots: list
 app.get('/api/snapshots', (req: Request, res: Response) => {
   try {
+    const sessionId = req.sessionId!;
+    const snapshots = getSessionSnapshots(sessionId);
     const list = Array.from(snapshots.values()).map(s => ({
       name: s.name,
       elementCount: s.elements.length,
@@ -978,7 +1063,9 @@ app.get('/api/snapshots', (req: Request, res: Response) => {
 // Snapshots: get by name
 app.get('/api/snapshots/:name', (req: Request, res: Response) => {
   try {
+    const sessionId = req.sessionId!;
     const { name } = req.params;
+    const snapshots = getSessionSnapshots(sessionId);
     const snapshot = snapshots.get(name!);
 
     if (!snapshot) {
@@ -1014,16 +1101,69 @@ app.get('/', (req: Request, res: Response) => {
 
 // Health check endpoint
 app.get('/health', (req: Request, res: Response) => {
+  const sessionId = req.sessionId;
+  const elements = sessionId ? getSessionElements(sessionId) : null;
+  
+  let totalClients = 0;
+  sessionClients.forEach(set => {
+    totalClients += set.size;
+  });
+
   res.json({
     status: 'healthy',
     timestamp: new Date().toISOString(),
-    elements_count: elements.size,
-    websocket_clients: clients.size
+    elements_count: elements ? elements.size : 'N/A',
+    total_sessions: sessionElements.size,
+    websocket_clients: totalClients
   });
+});
+
+// Chat API endpoint for natural language diagram creation
+app.post('/api/chat', async (req: Request, res: Response) => {
+  try {
+    const { message } = req.body;
+    
+    if (!message || typeof message !== 'string') {
+      return res.status(400).json({
+        success: false,
+        error: 'Message is required and must be a string'
+      });
+    }
+    
+    logger.info('Processing chat request', { sessionId: req.sessionId, messageLength: message.length });
+    
+    // Dynamically import the chat module
+    const chatModule = await import('./chat.js');
+    const sessionId = req.sessionId!;
+    
+    // Process chat request with a callback to notify client of progress
+    const result = await chatModule.processChatRequest(message, sessionId, (step) => {
+      broadcast(sessionId, {
+        type: 'chat_step',
+        step,
+        timestamp: new Date().toISOString()
+      });
+    });
+    
+    res.json({
+      success: true,
+      response: result,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    logger.error('Error processing chat request:', error);
+    res.status(500).json({
+      success: false,
+      error: (error as Error).message
+    });
+  }
 });
 
 // Sync status endpoint
 app.get('/api/sync/status', (req: Request, res: Response) => {
+  const sessionId = req.sessionId!;
+  const elements = getSessionElements(sessionId);
+  const clients = sessionClients.get(sessionId);
   res.json({
     success: true,
     elementCount: elements.size,
@@ -1032,7 +1172,7 @@ app.get('/api/sync/status', (req: Request, res: Response) => {
       heapUsed: Math.round(process.memoryUsage().heapUsed / 1024 / 1024), // MB
       heapTotal: Math.round(process.memoryUsage().heapTotal / 1024 / 1024), // MB
     },
-    websocketClients: clients.size
+    websocketClients: clients ? clients.size : 0
   });
 });
 

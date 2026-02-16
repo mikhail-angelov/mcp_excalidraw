@@ -182,6 +182,7 @@ export type WebSocketMessageType =
   | 'mermaid_convert'
   | 'canvas_cleared'
   | 'export_image_request'
+  | 'chat_step'
   | 'set_viewport';
 
 export interface InitialElementsMessage extends WebSocketMessage {
@@ -278,11 +279,6 @@ export interface Snapshot {
   createdAt: string;
 }
 
-// In-memory storage for Excalidraw elements
-export const elements = new Map<string, ServerElement>();
-
-// In-memory storage for snapshots
-export const snapshots = new Map<string, Snapshot>();
 
 // Validation function for Excalidraw elements
 export function validateElement(element: Partial<ServerElement>): element is ServerElement {
