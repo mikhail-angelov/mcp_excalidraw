@@ -10,12 +10,11 @@
   "scripts": {
     "start": "npm run build:server && node dist/index.js",
     "canvas": "npm run build:server && node dist/server.js",
-    "s": "npx tsx src/server.ts",
     "build": "npm run build:frontend && npm run build:server",
     "build:frontend": "vite build",
     "build:server": "npx tsc",
     "build:types": "npx tsc --emitDeclarationOnly",
-    "d": "vite",
+    "d": "npx tsx src/server.ts",
     "dev": "concurrently \"vite\" \"npm run dev:server\"",
     "dev:server": "npx tsc --watch",
     "production": "npm run build && npm run canvas",

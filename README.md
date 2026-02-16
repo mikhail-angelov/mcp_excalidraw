@@ -7,10 +7,12 @@
 
 Run a live Excalidraw canvas and control it from AI agents. This repo provides:
 
+- **AI Canvas Agent**: Built-in interactive AI assistant that draws for you in real-time.
 - **MCP Server**: Connect via Model Context Protocol (Claude Desktop, Cursor, Codex CLI, etc.)
 - **Agent Skill**: Portable skill for Claude Code, Codex CLI, and other skill-enabled agents
+- **Multi-session Architecture**: Support for multiple concurrent users with isolated states.
 
-Keywords: Excalidraw agent skill, Excalidraw MCP server, AI diagramming, Claude Code skill, Codex CLI skill, Claude Desktop MCP, Cursor MCP, Mermaid to Excalidraw.
+Keywords: Excalidraw agent skill, Excalidraw MCP server, AI diagramming, Claude Code skill, Codex CLI skill, Claude Desktop MCP, Cursor MCP, Mermaid to Excalidraw, LangChain Excalidraw, DeepSeek Excalidraw.
 
 ## Demo
 
@@ -22,8 +24,10 @@ Keywords: Excalidraw agent skill, Excalidraw MCP server, AI diagramming, Claude 
 
 - [Demo](#demo)
 - [What It Is](#what-it-is)
+- [AI Assistant](#ai-assistant)
 - [How We Differ from the Official Excalidraw MCP](#how-we-differ-from-the-official-excalidraw-mcp)
 - [What's New](#whats-new)
+- [Architecture](#architecture)
 - [Quick Start (Local)](#quick-start-local)
 - [Quick Start (Docker)](#quick-start-docker)
 - [Configure MCP Clients](#configure-mcp-clients)
@@ -42,10 +46,21 @@ Keywords: Excalidraw agent skill, Excalidraw MCP server, AI diagramming, Claude 
 
 ## What It Is
 
-This repo contains two separate processes:
+This repo contains a full AI-powered diagramming environment:
 
-- Canvas server: web UI + REST API + WebSocket updates (default `http://localhost:3000`)
-- MCP server: exposes MCP tools over stdio; syncs to the canvas via `EXPRESS_SERVER_URL`
+- **Canvas server**: Web UI + REST API + WebSocket updates (default `http://localhost:3000`)
+- **AI Assistant**: Built-in chat panel powered by **LangChain** and **DeepSeek** that can "see" and "manipulate" the canvas.
+- **MCP server**: Exposes 26 diagramming tools over stdio for external agents (Claude, Cursor, etc.).
+
+## AI Assistant
+
+The project now includes a first-class AI Assistant integrated directly into the web UI.
+
+- **Natural Language to Diagrams**: Just tell the assistant what you want to draw (e.g., "Draw a microservices architecture showing an API Gateway, a User Service, and a PostgreSQL database").
+- **Real-time Feedback**: Watch the AI's "thought process" as it plans the layout and invokes tools.
+- **Streaming Responses**: AI responses are streamed chunk-by-chunk for a smooth interactive experience.
+- **Resizable UI**: Adjust the AI chat panel to your preference or hide it to focus on the canvas.
+- **Prompt Injection Prevention**: Basic security layers to ensure the AI stays within the scope of diagramming.
 
 ## How We Differ from the Official Excalidraw MCP
 
@@ -73,6 +88,16 @@ Excalidraw now has an [official MCP](https://github.com/excalidraw/excalidraw-mc
 
 ## What's New
 
+
+### v3.0 — AI Canvas & Session Architecture
+
+- **Built-in AI Assistant**: Interactive chat panel on the frontend with streaming and tool-calling status.
+- **LangChain Integration**: Powered by `@langchain/core` and `@langchain/deepseek` for advanced reasoning.
+- **Multi-Session Support**: Robust session management via cookies and `X-Session-Id` headers. Multiple users can now have isolated canvases on the same server.
+- **LLM Streaming**: Real-time streaming of AI responses and processing steps (Thinking → Tool Invoking → Completed).
+- **Security Enhancements**: Cookie-based session validation and basic prompt injection sanitization.
+- **Resizable UI**: A premium, resizable AI panel on the right side of the canvas.
+
 ### v2.0 — Canvas Toolkit
 
 - 13 new MCP tools (26 total): `get_element`, `clear_canvas`, `export_scene`, `import_scene`, `export_to_image`, `duplicate_elements`, `snapshot_scene`, `restore_snapshot`, `describe_scene`, `get_canvas_screenshot`, `read_diagram_guide`, `export_to_excalidraw_url`, `set_viewport`
@@ -90,6 +115,23 @@ Excalidraw now has an [official MCP](https://github.com/excalidraw/excalidraw-mc
 - Agent skill: `skills/excalidraw-skill/` (portable instructions + helper scripts for export/import and repeatable CRUD)
 - Better testing loop: MCP Inspector CLI examples + browser screenshot checks (`agent-browser`)
 - Bugfixes: batch create now preserves element ids (fixes update/delete after batch); frontend entrypoint fixed (`main.tsx`)
+
+## Architecture
+
+The project follows a modular "Agent-on-Agent" architecture:
+
+1.  **Frontend (React)**: Hosts the Excalidraw canvas and the AI Chat panel.
+2.  **Express Server**: Manages WebSocket synchronization, session cookies, and the REST API.
+3.  **AI Chat Module (LangChain)**: Orchestrates the AI's "brain". It uses the MCP SDK to launch the MCP server as a subprocess via stdio.
+4.  **MCP Server (Node.js)**: The low-level "hands" that actually perform CRUD operations on Excalidraw elements via the Express API.
+
+```text
+[ Browser ] <---(WS/HTTP)---> [ Express Server ]
+     ^                               |
+     | (Chat API)                    | (Subprocess / stdio)
+     v                               v
+[ AI Assistant ] <-----------> [ MCP Server ]
+```
 
 ## Quick Start (Local)
 
@@ -127,10 +169,17 @@ The MCP server runs over stdio and can be configured with any MCP-compatible cli
 
 ### Environment Variables
 
+---
+
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `EXPRESS_SERVER_URL` | URL of the canvas server | `http://localhost:3000` |
 | `ENABLE_CANVAS_SYNC` | Enable real-time canvas sync | `true` |
+| `DEEPSEEK_API_KEY` | API Key for the built-in AI Assistant | `(empty)` |
+| `PORT` | Server port | `3000` |
+| `HOST` | Server host | `localhost` |
+
+---
 
 ---
 
@@ -363,7 +412,9 @@ Config location: `~/.gemini/antigravity/mcp_config.json`
 - **Docker networking**: Use `host.docker.internal` to reach the canvas server running on your host machine. On Linux, you may need `--add-host=host.docker.internal:host-gateway` or use `172.17.0.1`.
 - **Canvas server**: Must be running before the MCP server connects. Start it with `npm run canvas` (local) or `docker run -d -p 3000:3000 ghcr.io/yctimlin/mcp_excalidraw-canvas:latest` (Docker).
 - **Absolute paths**: When using local node setup, replace `/absolute/path/to/mcp_excalidraw` with the actual path where you cloned and built the repo.
-- **In-memory storage**: The canvas server stores elements in memory. Restarting the server will clear all elements. Use the export/import scripts if you need persistence.
+- **Session Isolation**: Each browser session gets its own `mcp_sid` cookie or can provide an `X-Session-Id` header to maintain private canvas state.
+- **In-memory storage**: The canvas server stores elements in memory per session. Restarting the server will clear all elements. Use the export/import scripts if you need persistence.
+- **LLM Compatibility**: The built-in assistant requires a `DEEPSEEK_API_KEY`. If not provided, it falls back to simple pattern matching.
 
 ## Agent Skill (Optional)
 
@@ -476,8 +527,10 @@ agent-browser screenshot /tmp/canvas.png
 
 ## Troubleshooting
 
-- Canvas not updating: confirm `EXPRESS_SERVER_URL` points at the running canvas server.
-- Updates/deletes fail after batch creation: ensure you are on a build that includes the batch id preservation fix (merged via PR #34).
+- **AI Assistant not responding**: Ensure `DEEPSEEK_API_KEY` is set in your `.env` file. Check server logs for API errors.
+- **Canvas not updating**: Confirm `EXPRESS_SERVER_URL` points at the running canvas server and WebSockets are connected (check browser console).
+- **Updates/deletes fail after batch creation**: Ensure you are on a build that includes the batch id preservation fix (merged via PR #34).
+- **Session issues**: If the canvas is shared when it shouldn't be, clear your browser cookies to reset the `mcp_sid`.
 
 ## Known Issues / TODO
 

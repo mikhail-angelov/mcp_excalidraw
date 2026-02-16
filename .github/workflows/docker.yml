@@ -11,12 +11,11 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME_MCP: ${{ github.repository }}
-  IMAGE_NAME_CANVAS: ${{ github.repository }}-canvas
+  IMAGE_NAME_AGENT: mcp-excalidraw-agent
 
 jobs:
-  build-and-push-mcp:
-    name: Build and Push MCP Server Image
+  build-and-push-agent:
+    name: Build and Push Agent Image
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -36,11 +35,11 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract metadata for MCP Server
+      - name: Extract metadata for Agent
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_MCP }}
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_AGENT }}
           tags: |
             type=ref,event=branch
             type=ref,event=pr
@@ -50,11 +49,11 @@ jobs:
             type=sha,prefix=sha-
             type=raw,value=latest,enable={{is_default_branch}}
 
-      - name: Build and push MCP Server image
+      - name: Build and push Agent image
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: ./Dockerfile
+          file: ./Dockerfile.agent
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
@@ -83,32 +82,6 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract metadata for Canvas Server
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_CANVAS }}
-          tags: |
-            type=ref,event=branch
-            type=ref,event=pr
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
-            type=sha,prefix=sha-
-            type=raw,value=latest,enable={{is_default_branch}}
-
-      - name: Build and push Canvas Server image
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: ./Dockerfile.canvas
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          platforms: linux/amd64,linux/arm64
-
   test-docker-images:
     name: Test Docker Images
     needs: [build-and-push-mcp, build-and-push-canvas]
@@ -130,15 +103,6 @@ jobs:
           else
             echo "value=${{ github.ref_name }}" >> $GITHUB_OUTPUT
           fi
-
-      - name: Test Canvas Server image
-        run: |
-          docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_CANVAS }}:${{ steps.tag.outputs.value }}
-          docker run -d -p 3000:3000 --name test-canvas ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_CANVAS }}:${{ steps.tag.outputs.value }}
-          sleep 10
-          curl -f http://localhost:3000/health || exit 1
-          docker logs test-canvas
-          docker stop test-canvas
 
       - name: Test MCP Server image
         run: |
