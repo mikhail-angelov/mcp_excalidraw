@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
 
 env:
-  REGISTRY: ghcr.io
+  REGISTRY: ghcr.io//mikhail-angelov
   IMAGE_NAME_AGENT: mcp-excalidraw-agent
 
 jobs:
@@ -39,7 +39,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_AGENT }}
+          images: ${{ env.REGISTRY }}/${{ github.actor }}/${{ env.IMAGE_NAME_AGENT }}
           tags: |
             type=ref,event=branch
             type=ref,event=pr
@@ -86,5 +86,5 @@ jobs:
 
       - name: Test MCP Server image
         run: |
-          docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_MCP }}:${{ steps.tag.outputs.value }}
+          docker pull ${{ env.REGISTRY }}/${{ github.actor }}/${{ env.IMAGE_NAME_AGENT }}:${{ steps.tag.outputs.value }}
           echo "MCP Server image pulled successfully"
