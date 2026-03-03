@@ -132,7 +132,7 @@ try {
       logger.error(`No tools loaded from MCP server `);
       process.exit(-1);
     }
-    llmWithTools = genericLlm.bindTools(tools);
+    llmWithTools = genericLlm.bindTools(tools) as ChatDeepSeek;
   } else {
     logger.warn(
       "No valid DeepSeek API key found. Chat functionality will use simple pattern matching.",
