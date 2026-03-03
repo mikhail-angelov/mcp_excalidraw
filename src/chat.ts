@@ -1,16 +1,17 @@
 import { ChatDeepSeek } from "@langchain/deepseek";
 import {
+  createAgent,
   HumanMessage,
+  AIMessage,
+  ToolMessage,
   SystemMessage,
   BaseMessage,
-  ToolMessage,
-  AIMessage,
-} from "@langchain/core/messages";
+  tool,
+} from "langchain";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { loadMcpTools } from "@langchain/mcp-adapters";
-import { StructuredTool } from "@langchain/core/tools";
-import { Runnable } from "@langchain/core/runnables";
+import { DynamicStructuredTool } from "@langchain/core/tools";
 import logger from "./utils/logger.js";
 import fetch from "node-fetch";
 import dotenv from "dotenv";
@@ -87,8 +88,8 @@ function sanitizeInput(input: string): string {
 
 // Initialize session-specific storage for LLM and tools
 let genericLlm: ChatDeepSeek | null = null;
-const sessionTools = new Map<string, StructuredTool[]>();
-const sessionLLMWithTools = new Map<string, Runnable>();
+let llmWithTools: ChatDeepSeek | null = null;
+let tools: DynamicStructuredTool[] = [];
 
 try {
   if (
@@ -101,6 +102,37 @@ try {
       apiKey: process.env.DEEPSEEK_API_KEY,
     });
     logger.info("LangChain generic LLM initialized");
+
+    const serverParams = {
+      command: "node",
+      args: ["dist/index.js"],
+    };
+
+    // Create Stdio client transport
+    const transport = new StdioClientTransport(serverParams);
+
+    // Create MCP client with the transport
+    const client = new Client(
+      {
+        name: `excalidraw-chat-client`,
+        version: "1.0.0",
+      },
+      {
+        capabilities: {},
+      },
+    );
+
+    // Connect the client
+    await client.connect(transport);
+
+    // Load the tools from the MCP server
+    tools = await loadMcpTools("excalidraw-server", client);
+
+    if (tools.length === 0) {
+      logger.error(`No tools loaded from MCP server `);
+      process.exit(-1);
+    }
+    llmWithTools = genericLlm.bindTools(tools);
   } else {
     logger.warn(
       "No valid DeepSeek API key found. Chat functionality will use simple pattern matching.",
@@ -161,24 +193,26 @@ async function getCanvasState(sessionId: string): Promise<string> {
     const labeledElements: string[] = [];
 
     elements.forEach((element: any) => {
-      const type = element.type || 'unknown';
+      const type = element.type || "unknown";
       typeCounts[type] = (typeCounts[type] || 0) + 1;
 
       // Collect labeled elements for context
       if (element.text && element.text.trim()) {
-        labeledElements.push(`${type}: "${element.text.substring(0, 30)}${element.text.length > 30 ? '...' : ''}"`);
+        labeledElements.push(
+          `${type}: "${element.text.substring(0, 30)}${element.text.length > 30 ? "..." : ""}"`,
+        );
       }
     });
 
     // Build detailed description
     const typeDescriptions = Object.entries(typeCounts)
       .map(([type, count]) => `${type}: ${count}`)
-      .join(', ');
+      .join(", ");
 
     let description = `Canvas contains ${elements.length} elements (${typeDescriptions}).`;
 
     if (labeledElements.length > 0) {
-      description += ` Labels: ${labeledElements.slice(0, 5).join(', ')}`;
+      description += ` Labels: ${labeledElements.slice(0, 5).join(", ")}`;
       if (labeledElements.length > 5) {
         description += ` and ${labeledElements.length - 5} more labeled elements.`;
       }
@@ -201,61 +235,6 @@ async function getCanvasState(sessionId: string): Promise<string> {
   }
 }
 
-// Initialize MCP tools via stdio for a specific session
-async function initializeSessionMCPTools(sessionId: string): Promise<boolean> {
-  try {
-    logger.info(`Initializing MCP tools for session: ${sessionId}`);
-
-    const serverParams = {
-      command: "node",
-      args: ["dist/index.js"],
-    };
-
-    // Create Stdio client transport
-    const transport = new StdioClientTransport(serverParams);
-
-    // Create MCP client with the transport
-    const client = new Client(
-      {
-        name: `excalidraw-chat-client-${sessionId}`,
-        version: "1.0.0",
-      },
-      {
-        capabilities: {},
-      },
-    );
-
-    // Connect the client
-    await client.connect(transport);
-
-    // Load the tools from the MCP server
-    const loadedTools = await loadMcpTools("excalidraw-server", client);
-
-    if (loadedTools.length === 0) {
-      logger.error(`No tools loaded from MCP server for session ${sessionId}`);
-      return false;
-    }
-
-    sessionTools.set(sessionId, loadedTools);
-    logger.info(
-      `Successfully loaded ${loadedTools.length} tools for session ${sessionId}`,
-    );
-
-    // Bind tools to the LLM for this session
-    if (genericLlm) {
-      sessionLLMWithTools.set(sessionId, genericLlm.bindTools(loadedTools));
-    }
-
-    return true;
-  } catch (error: any) {
-    logger.error(
-      `Failed to initialize MCP tools for session ${sessionId}:`,
-      error,
-    );
-    return false;
-  }
-}
-
 // Main chat function with proper tool calling
 export async function processChatRequest(
   userMessage: string,
@@ -273,18 +252,6 @@ export async function processChatRequest(
       const simpleResponse = processSimpleRequest(userMessage);
       return `I understand you want to: "${userMessage}"\n\n${simpleResponse}\n\nNote: To use full AI capabilities, please set a valid DEEPSEEK_API_KEY in your .env file.`;
     }
-
-    // Initialize tools for this session if not already initialized
-    if (!sessionTools.has(sessionId)) {
-      onStep?.({ type: "initializing_tools" });
-      const initialized = await initializeSessionMCPTools(sessionId);
-      if (!initialized) {
-        return "Failed to initialize MCP tools. Please check if the MCP server is running.";
-      }
-    }
-
-    const llmWithTools = sessionLLMWithTools.get(sessionId);
-    const tools = sessionTools.get(sessionId);
 
     if (!llmWithTools || !tools) {
       return "LLM for this session not initialized. Please check the configuration.";
@@ -425,9 +392,9 @@ export async function processChatRequest(
           currentMessages.push(
             new HumanMessage(
               `Please use the available drawing tools to accomplish the request. ` +
-              `Don't just describe what you would do - actually call the tools like batch_create_elements, create_element, etc. ` +
-              `Remember: you must execute tool calls to create or modify elements on the canvas.`
-            )
+                `Don't just describe what you would do - actually call the tools like batch_create_elements, create_element, etc. ` +
+                `Remember: you must execute tool calls to create or modify elements on the canvas.`,
+            ),
           );
           // Continue to next iteration
           continue;
