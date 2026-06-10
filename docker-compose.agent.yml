@@ -11,9 +11,18 @@ services:
       - .env
     restart: unless-stopped
     networks:
-      - mcp-network
+      - proxy-net
+    labels:
+      monic.enabled: "true"
+      monic.check: "http"
+      monic.check_http_url: "https://diagram.bconf.com"
+      monic.name: "diagram.bconf.com"
+      redoproxy.enabled: "true"
+      redoproxy.domain: "diagram.bconf.com"
+      redoproxy.port: 3000
     command: ["node", "dist/server.js"]
 
 
 networks:
-  mcp-network:
+  proxy-net:
+    external: true
